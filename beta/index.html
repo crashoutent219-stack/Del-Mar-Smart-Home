@@ -123,7 +123,7 @@ const activeProfile=()=>profiles.find(p=>p.id===houseID);
 function storeProfiles(){
  try{localStorage.setItem(PROFILE_STORE,JSON.stringify(profiles));}catch(e){notify('Browser cannot save connections; check storage permissions.');}
 }
-function clearConnection(){applyHudAccent(DEFAULT_HUD_ACCENT);connected=false;bridgeOnline=false;role='guest';residents=[];freshResidentKey='';houseID='';secret='';st=defaultState();musicSettings={allowResidents:true,stations:[]};visits=[];historyExtra=[];hasMore=true;}
+function clearConnection(){pendingChanges.clear();commandInfo=null;applyHudAccent(DEFAULT_HUD_ACCENT);connected=false;bridgeOnline=false;role='guest';residents=[];freshResidentKey='';houseID='';secret='';st=defaultState();musicSettings={allowResidents:true,stations:[]};visits=[];historyExtra=[];hasMore=true;}
 async function switchHouse(id){
  const p=profiles.find(x=>x.id===id);if(!p)return;
  clearConnection();houseID=p.id;secret=p.key;endpoint=WASABI_BRIDGE;
@@ -150,24 +150,87 @@ function notify(s){notice=s;$('toast').textContent=s;$('toast').style.display='b
 function url(){return WASABI_BRIDGE;}
 function auth(){return {'X-House-ID':houseID,'X-House-Key':secret};}
 function statusLabel(){const t=st.updated_at||0;return connected?(bridgeOnline?'HOUSE ONLINE · ':'HOUSE OFFLINE · ')+houseID.slice(0,8):'NOT CONNECTED';}
+
+const pendingChanges=new Map();
+let commandInfo=null, lastHudSync=0, stateRefreshBusy=false;
+function getPath(obj,path){let n=obj;for(const p of path){if(n==null)return undefined;n=n[p];}return n;}
+function putPath(obj,path,val){let n=obj;for(let i=0;i<path.length-1;i++){const p=path[i];if(!n[p]||typeof n[p]!=='object')n[p]={};n=n[p];}n[path[path.length-1]]=String(val);}
+function desiredUpdates(action,room,value){
+ const valid=ROOMS.some(r=>r.id===room);
+ const roomMap={LIGHT_ON:'on',LIGHT_BRIGHT:'brightness',LIGHT_COLOR:'color',FAN_SPEED:'fan',ROOM_NAME:'name'};
+ if(valid&&roomMap[action])return [[['rooms',room,roomMap[action]],value]];
+ if(action==='ALL_LIGHTS')return ROOMS.map(r=>[['rooms',r.id,'on'],value]);
+ const fields={SEC_ARMED:['security','armed'],SEC_LOCKDOWN:['security','lockdown'],SEC_SILENT:['security','silent'],SEC_KICK:['security','kick'],PROJECTOR_POWER:['projector','power'],PROJECTOR_SPIN:['projector','spin'],PROJECTOR_TEXTURE:['projector','texture'],FIRE_POWER:['fireplace','power'],FIRE_SOUND:['fireplace','sound'],CLEAN_ENABLED:['cleaning'],DOORBELL_SOUND:['doorbellSound'],PARCEL_MUSIC_RELAY:['parcelMusic','relay']};
+ return fields[action]?[[fields[action],value]]:[];
+}
+function actionName(action,room,value){
+ const names={SEC_ARMED:'Security '+(value==='1'?'ARM':'DISARM'),SEC_LOCKDOWN:'Security lockdown',SEC_SILENT:'Security silent mode',LIGHT_ON:'Lighting power',LIGHT_COLOR:'Lighting color',LIGHT_BRIGHT:'Lighting brightness',ALL_LIGHTS:'All lights',FAN_SPEED:'Fan speed',POOL:'Pool cover',POOL_HOME:'Pool cover home',PROJECTOR_POWER:'Projector power',PROJECTOR_SPIN:'Projector rotation',PROJECTOR_TEXTURE:'Projector image',FIRE_POWER:'Fireplace',FIRE_SOUND:'Fire sound',CLEAN_ENABLED:'Cleaning requirement',CLEAN_MODE:'Cleaning action',PARCEL_MUSIC_SET:'Parcel music',PARCEL_MUSIC_OFF:'Parcel music off',SEC_EJECT:'Parcel eject request'};
+ return (names[action]||action.replace(/_/g,' '))+(room?' · '+defaultRoom(room):'');
+}
+function stageQueued(action,room,value){
+ const now=Date.now(),changes=desiredUpdates(action,room,value);
+ for(const [path,wanted] of changes){pendingChanges.set(houseID+'|'+path.join('.'),{house:houseID,path,wanted:String(wanted),at:now});putPath(st,path,wanted);}
+ commandInfo={house:houseID,stage:'queued',label:actionName(action,room,value),tracked:changes.length>0};
+ render();
+}
+function applyPending(remote){
+ const now=Date.now();let confirmed=0,expired=0;
+ for(const [key,p] of pendingChanges){
+  if(p.house!==houseID)continue;
+  if(String(getPath(remote,p.path)??'').toUpperCase()===p.wanted.toUpperCase()){pendingChanges.delete(key);confirmed++;}
+  else if(now-p.at<120000)putPath(remote,p.path,p.wanted);
+  else{pendingChanges.delete(key);expired++;}
+ }
+ if(commandInfo?.house===houseID&&commandInfo.tracked){
+  if(expired>0)commandInfo.stage='expired';
+  else if(confirmed>0&&![...pendingChanges.values()].some(x=>x.house===houseID))commandInfo.stage='core';
+ }
+ return remote;
+}
+function commandStatus(){
+ if(!commandInfo||commandInfo.house!==houseID)return '';
+ const s=commandInfo.stage;
+ const detail=s==='queued'?'Requested setting shown. Waiting for House Core state; the physical device is not yet verified.':s==='core'?'House Core state updated. Physical device or security sensor response is not independently verified.':'No matching Core state after two minutes; the remote setting is shown again. Check the in-world receiver.';
+ return '<div class="info" role="status" style="margin:0 0 16px"><strong>'+esc(commandInfo.label)+'</strong> · '+(s==='queued'?'PENDING':s==='core'?'CORE UPDATED':'NOT CONFIRMED')+'<div class="sub" style="margin-top:5px">'+detail+'</div></div>';
+}
+
 async function query(path,opt={}){
  if(!endpoint||!houseID||!secret)throw Error('Connect your mansion in Settings first.');
  const response=await fetch(url()+path,{cache:'no-store',...opt,headers:{...auth(),...(opt.body?{'Content-Type':'application/json'}:{}),...(opt.headers||{})}});
  const data=await response.json().catch(()=>({}));if(!response.ok)throw Error(data.error||'Bridge error '+response.status);return data;
 }
 async function refresh(){
- if(!endpoint||!houseID||!secret)return;
+ if(!endpoint||!houseID||!secret||stateRefreshBusy)return;
  const requestID=houseID,requestKey=secret;
+ stateRefreshBusy=true;
  try{
   const result=await query('/api/state');
   if(houseID!==requestID||secret!==requestKey)return;
-  if(result.ok){applyHudAccent(result.theme?.accent||DEFAULT_HUD_ACCENT);st={...defaultState(),...result.state};if(pendingColor&&pendingColor.house===houseID){const actual=String(st.rooms?.[pendingColor.room]?.color||'').toUpperCase();if(actual===pendingColor.value)pendingColor=null;else if(Date.now()-pendingColor.start<90000&&st.rooms?.[pendingColor.room])st.rooms[pendingColor.room].color=pendingColor.value;else{pendingColor=null;notify('Core state did not confirm the requested light color.');}}musicSettings=result.musicSettings||{allowResidents:true,stations:[]};visits=result.visitors||[];role=result.role==='owner'?'owner':'resident';connected=true;bridgeOnline=!!result.online;if(!document.activeElement?.matches('input,select'))render();}
- }catch(e){if(houseID!==requestID||secret!==requestKey)return;connected=false;bridgeOnline=false;role='guest';render();if(!working)notify(e.message);}
+  if(result.ok){
+   lastHudSync=Date.now();
+   applyHudAccent(result.theme?.accent||DEFAULT_HUD_ACCENT);
+   st=applyPending({...defaultState(),...result.state});
+   musicSettings=result.musicSettings||{allowResidents:true,stations:[]};
+   visits=result.visitors||[];
+   role=result.role==='owner'?'owner':'resident';
+   connected=true;bridgeOnline=!!result.online;
+   if(!document.activeElement?.matches('input,select'))render();
+  }
+ }catch(e){
+  if(houseID!==requestID||secret!==requestKey)return;
+  connected=false;bridgeOnline=false;role='guest';render();
+  if(!working)notify(e.message);
+ }finally{stateRefreshBusy=false;}
 }
 async function command(action,r='',value=''){
  if(!connected){notify('Connect to your house before controlling devices.');return;}
- try {working=true;await query('/api/command',{method:'POST',body:JSON.stringify({action,room:r,value:String(value)})});if(action==='LIGHT_COLOR'&&st.rooms?.[r]){pendingColor={house:houseID,room:r,value:String(value).toUpperCase(),start:Date.now()};st.rooms[r].color=String(value).toUpperCase();if(page==='Lights')render();notify('Color queued; waiting for Core confirmation (physical fixture not verified).');}else notify('Command queued for '+(activeProfile()?.name||'the selected house')+'.');setTimeout(()=>refresh(),8000);setTimeout(()=>refresh(),25000);setTimeout(()=>refresh(),65000);}
- catch(e){notify('Command not sent: '+e.message);}finally{working=false;}
+ try{
+  working=true;
+  await query('/api/command',{method:'POST',body:JSON.stringify({action,room:r,value:String(value)})});
+  stageQueued(action,r,String(value));
+  notify('Queued. HUD shows the requested setting; physical device response is not verified.');
+ }catch(e){notify('Command not sent: '+e.message);await refresh();}
+ finally{working=false;}
 }
 function nav(){
  $('nav').innerHTML=PAGES.filter(([name])=>isOwner()||!['Security','Doorbell'].includes(name)).map(([name,ico])=>`<button data-page="${name}" class="${page===name?'active':''}"><span>${ico}</span>${name}</button>`).join('');
@@ -183,7 +246,7 @@ function percent(){const scores=ROOMS.map(r=>Number(roomData(r.id).clean||100));
 function securityWord(){return !val(st.security.armed)?'DISARMED':val(st.security.lockdown)?'LOCKDOWN':'ARMED';}
 function home(){const on=ROOMS.filter(r=>val(roomData(r.id).on)).length;return `<div class="grid four">
  <div class="card"><div class="kpi-label">House Cleanliness</div><div class="kpi green">${percent()}%</div><div class="sub">Live home cleaning status</div></div>
- <div class="card"><div class="kpi-label">Security</div><div class="kpi ${val(st.security.armed)?'green':'gold'}">${securityWord()}</div><div class="sub">${connected?'House status':'Disconnected'}</div></div>
+ <div class="card"><div class="kpi-label">Security</div><div class="kpi ${val(st.security.armed)?'green':'gold'}" style="font-size:clamp(18px,2.2vw,27px);white-space:nowrap">${securityWord()}</div><div class="sub">${connected?'Core setting · sensor unverified':'Disconnected'}</div></div>
  <div class="card"><div class="kpi-label">Lighting</div><div class="kpi">${on} active</div><div class="sub">Zones switched on</div></div>
  <div class="card"><div class="kpi-label">Pool Cover</div><div class="kpi blue">${esc(st.pool)}</div><div class="sub">Last reported motor status</div></div>
  </div><div class="grid two" style="margin-top:18px">
@@ -226,7 +289,7 @@ async function saveMusicSettings(next){
 }
 function cleaning(){return `<div class="grid two"><div class="card stack"><h3>Cleaning Requirement</h3><div class="row"><div><div class="kpi green">${percent()}%</div><span class="sub">Overall House Cleanliness</span></div>${isOwner()?toggle(val(st.cleaning),'cleaning:toggle'):`<strong>${val(st.cleaning)?'ON':'OFF'}</strong>`}</div><div class="info">Turning cleaning OFF prevents dirt accumulation and new pests; it also requests removal of active critters. The existing scores are preserved for when cleaning is turned back on.</div><div class="divider"></div><h3>Housekeeping Actions</h3><p class="sub">Select an action, then stand near and touch a paired floor or window cleaning spot in-world. The avatar must grant animation permissions and remain nearby. Mopping and sweeping share one animation.</p><div class="control-grid">${mk('Mop Floors','clean:MOP','primary')}${mk('Sweep Floors','clean:SWEEP')}${mk('Clean Windows','clean:WINDOW')}${isOwner()?mk('Pair Dirt Spot','pair:CLEAN_ZONE'):''}</div><label class="field-label">Cleaning spot room</label>${selector('room')}<label class="field-label">Cleaning spot type</label><select class="field" id="zoneKind"><option value="FLOOR">Floor (Mop / Sweep)</option><option value="WINDOW">Window (uses Windows global zone)</option></select></div><div class="card"><h3>Room Cleanliness</h3><div class="list">${ROOMS.map(r=>scoreRow(roomName(r.id),roomData(r.id).clean)).join('')}${scoreRow('Windows (All)',st.windowClean)}</div><div class="divider"></div><div class="row"><span>Pest Activity</span><strong class="${Number(st.pestCount||0)>0?'red':'green'}">${esc(st.pestCount||'0')} tracked</strong></div>${isOwner()?mk('Pair Pest Spawner','pair:PEST'):''}</div></div>`;}
 function scoreRow(n,p){const v=Math.min(100,Math.max(0,Number(p)||0));return `<div class="statline"><span>${esc(n)}</span><span><span style="display:inline-block;vertical-align:middle;width:75px;height:7px;border-radius:5px;background:#203853;margin-right:8px;overflow:hidden"><span style="display:block;height:100%;width:${v}%;background:${v<50?'#f39c8c':v<75?'#f0ce80':'#6bd5a1'}"></span></span>${v}%</span></div>`;}
-function security(){const s=st.security;return `<div class="grid two"><div class="card stack"><h3>Security Status</h3><div class="kpi ${val(s.armed)?'green':'gold'}">${securityWord()}</div><div class="control-grid">${mk('ARM','sec:1','primary')}${mk('DISARM','sec:0','warn')}</div><div class="divider"></div><div class="row"><span>Lockdown</span>${toggle(val(s.lockdown),'sec:lockdown')}</div><div class="row"><span>Silent Mode (mute visitor warnings)</span>${toggle(val(s.silent),'sec:silent')}</div><label class="field-label">Kick Delay</label><select class="field" data-select="kick">${[10,30,60].map(n=>`<option value="${n}" ${String(s.kick)===String(n)?'selected':''}>${n} seconds</option>`).join('')}</select>${mk('Pair Security Device','pair:SECURITY')}<div class="notice">Security only acts within its configured area and when your land permissions allow it. This is not a replacement for parcel access rules.</div></div><div class="card stack"><h3>Access Control</h3><p class="sub">Add residents to the whitelist or grant moderator access. Only someone holding the private house key should be allowed to use this web panel.</p><label class="field-label">Avatar UUID</label><input class="field" id="accessUUID" maxlength="36" placeholder="Avatar UUID"><div class="control-grid">${mk('Allow Resident','sec:wladd')}${mk('Remove from Allowlist','sec:wldel')}${mk('Add Moderator','sec:modadd')}${mk('Remove Moderator','sec:moddel')}</div><div class="divider"></div><p class="sub">Whitelist and moderator UUIDs are saved by the security object itself using Linkset Data. Removing an avatar here does not revoke an individual HUD key or physically eject anyone.</p>
+function security(){const s=st.security;return `<div class="grid two"><div class="card stack"><h3>Security Status</h3><div class="kpi ${val(s.armed)?'green':'gold'}">${securityWord()}</div><p class="sub">House Core setting; confirm actual armed state on the paired Security Sensor.</p><div class="control-grid">${mk('ARM','sec:1','primary')}${mk('DISARM','sec:0','warn')}</div><div class="divider"></div><div class="row"><span>Lockdown</span>${toggle(val(s.lockdown),'sec:lockdown')}</div><div class="row"><span>Silent Mode (mute visitor warnings)</span>${toggle(val(s.silent),'sec:silent')}</div><label class="field-label">Kick Delay</label><select class="field" data-select="kick">${[10,30,60].map(n=>`<option value="${n}" ${String(s.kick)===String(n)?'selected':''}>${n} seconds</option>`).join('')}</select>${mk('Pair Security Device','pair:SECURITY')}<div class="notice">Security only acts within its configured area and when your land permissions allow it. This is not a replacement for parcel access rules.</div></div><div class="card stack"><h3>Access Control</h3><p class="sub">Add residents to the whitelist or grant moderator access. Only someone holding the private house key should be allowed to use this web panel.</p><label class="field-label">Avatar UUID</label><input class="field" id="accessUUID" maxlength="36" placeholder="Avatar UUID"><div class="control-grid">${mk('Allow Resident','sec:wladd')}${mk('Remove from Allowlist','sec:wldel')}${mk('Add Moderator','sec:modadd')}${mk('Remove Moderator','sec:moddel')}</div><div class="divider"></div><p class="sub">Whitelist and moderator UUIDs are saved by the security object itself using Linkset Data. Removing an avatar here does not revoke an individual HUD key or physically eject anyone.</p>
  <div class="divider"></div><h3>Eject Avatar From Parcel</h3>
  <p class="sub">Owner only. Enter an avatar UUID to request one-time removal from the land parcel where your paired Security Sensor is rezzed. This does not ban anyone, and cannot target just the interior of a building on a shared parcel.</p>
  <label class="field-label" for="ejectUUID">Avatar UUID to eject</label>
@@ -275,11 +338,11 @@ function settings(){
  ${themePanel()} ${residentPanel()}</div>`;
 }
 
-function render(){if(!isOwner()&&['Security','Doorbell'].includes(page))page='Home';nav();const pages={Home:home,Lights:lights,Fans:fans,Pool:pool,Projector:projector,Fireplace:fireplace,Music:parcelMusic,Cleaning:cleaning,Security:security,Doorbell:doorbell,Settings:settings};$('content').innerHTML=pages[page]();}
+function render(){if(!isOwner()&&['Security','Doorbell'].includes(page))page='Home';nav();const pages={Home:home,Lights:lights,Fans:fans,Pool:pool,Projector:projector,Fireplace:fireplace,Music:parcelMusic,Cleaning:cleaning,Security:security,Doorbell:doorbell,Settings:settings};$('content').innerHTML=commandStatus()+pages[page]();}
 const validMusicURL=x=>{try{if(!x||x.length>440||/[\s|<>\\]/.test(x))return false;const u=new URL(x);return ['https:','http:'].includes(u.protocol)&&!!u.hostname&&!u.username&&!u.password;}catch{return false;}};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const text=id=>$(id)?.value.trim()||'';
-let pendingColor=null;
+// All requested device settings are staged by pendingChanges.
 async function act(a){
  if(a==='music:tune'||a.startsWith('music:station:')){
   let url=a==='music:tune'?text('musicUrl'):musicSettings.stations?.[Number(a.slice(14))]?.url||'';
@@ -411,7 +474,7 @@ document.addEventListener('change',e=>{
  if(map[a] && (isOwner() || !['SEC_LOCKDOWN','SEC_SILENT','CLEAN_ENABLED'].includes(map[a][0])))command(map[a][0],map[a][1],t.checked?'1':'0');
 });
 document.addEventListener('input',e=>{if(e.target.id==='hudThemePicker'){const x=$('hudThemeHex');if(x)x.value=e.target.value.toUpperCase();applyHudAccent(e.target.value);return;}if(e.target.dataset.range==='brightness'){const b=$('brightnessValue');if(b)b.textContent=e.target.value+'%';}});
-applyHudAccent(DEFAULT_HUD_ACCENT);render();if(houseID&&secret&&endpoint)refresh();setInterval(()=>{if(!document.hidden)refresh();},120000);
+applyHudAccent(DEFAULT_HUD_ACCENT);render();if(houseID&&secret&&endpoint)refresh();setInterval(()=>{if(!document.hidden&&connected&&Date.now()-lastHudSync>=([...[...pendingChanges.values()].filter(p=>p.house===houseID)].length?12000:30000))refresh();},5000);
 
 </script>
 </body></html>
