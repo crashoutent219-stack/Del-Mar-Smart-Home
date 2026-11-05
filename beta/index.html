@@ -152,7 +152,7 @@ function auth(){return {'X-House-ID':houseID,'X-House-Key':secret};}
 function statusLabel(){const t=st.updated_at||0;return connected?(bridgeOnline?'HOUSE ONLINE · ':'HOUSE OFFLINE · ')+houseID.slice(0,8):'NOT CONNECTED';}
 
 const pendingChanges=new Map();
-let commandInfo=null, lastHudSync=0, stateRefreshBusy=false;
+let commandInfo=null, lastHudSync=0, stateRefreshBusy=false, refreshAfterBusy=false;
 function getPath(obj,path){let n=obj;for(const p of path){if(n==null)return undefined;n=n[p];}return n;}
 function putPath(obj,path,val){let n=obj;for(let i=0;i<path.length-1;i++){const p=path[i];if(!n[p]||typeof n[p]!=='object')n[p]={};n=n[p];}n[path[path.length-1]]=String(val);}
 function desiredUpdates(action,room,value){
@@ -200,7 +200,8 @@ async function query(path,opt={}){
  const data=await response.json().catch(()=>({}));if(!response.ok)throw Error(data.error||'Bridge error '+response.status);return data;
 }
 async function refresh(){
- if(!endpoint||!houseID||!secret||stateRefreshBusy)return;
+ if(!endpoint||!houseID||!secret)return;
+ if(stateRefreshBusy){refreshAfterBusy=true;return;}
  const requestID=houseID,requestKey=secret;
  stateRefreshBusy=true;
  try{
@@ -220,7 +221,7 @@ async function refresh(){
   if(houseID!==requestID||secret!==requestKey)return;
   connected=false;bridgeOnline=false;role='guest';render();
   if(!working)notify(e.message);
- }finally{stateRefreshBusy=false;}
+ }finally{stateRefreshBusy=false;if(refreshAfterBusy){refreshAfterBusy=false;refresh();}}
 }
 async function command(action,r='',value=''){
  if(!connected){notify('Connect to your house before controlling devices.');return;}
