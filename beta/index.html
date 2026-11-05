@@ -161,12 +161,12 @@ async function refresh(){
  try{
   const result=await query('/api/state');
   if(houseID!==requestID||secret!==requestKey)return;
-  if(result.ok){applyHudAccent(result.theme?.accent||DEFAULT_HUD_ACCENT);st={...defaultState(),...result.state};musicSettings=result.musicSettings||{allowResidents:true,stations:[]};visits=result.visitors||[];role=result.role==='owner'?'owner':'resident';connected=true;bridgeOnline=!!result.online;if(!document.activeElement?.matches('input,select'))render();}
+  if(result.ok){applyHudAccent(result.theme?.accent||DEFAULT_HUD_ACCENT);st={...defaultState(),...result.state};if(pendingColor&&pendingColor.house===houseID){const actual=String(st.rooms?.[pendingColor.room]?.color||'').toUpperCase();if(actual===pendingColor.value)pendingColor=null;else if(Date.now()-pendingColor.start<90000&&st.rooms?.[pendingColor.room])st.rooms[pendingColor.room].color=pendingColor.value;else{pendingColor=null;notify('Core state did not confirm the requested light color.');}}musicSettings=result.musicSettings||{allowResidents:true,stations:[]};visits=result.visitors||[];role=result.role==='owner'?'owner':'resident';connected=true;bridgeOnline=!!result.online;if(!document.activeElement?.matches('input,select'))render();}
  }catch(e){if(houseID!==requestID||secret!==requestKey)return;connected=false;bridgeOnline=false;role='guest';render();if(!working)notify(e.message);}
 }
 async function command(action,r='',value=''){
  if(!connected){notify('Connect to your house before controlling devices.');return;}
- try {working=true;await query('/api/command',{method:'POST',body:JSON.stringify({action,room:r,value:String(value)})});notify('Command queued for '+(activeProfile()?.name||'the selected house')+'.');setTimeout(()=>refresh(),1800);}
+ try {working=true;await query('/api/command',{method:'POST',body:JSON.stringify({action,room:r,value:String(value)})});if(action==='LIGHT_COLOR'&&st.rooms?.[r]){pendingColor={house:houseID,room:r,value:String(value).toUpperCase(),start:Date.now()};st.rooms[r].color=String(value).toUpperCase();if(page==='Lights')render();notify('Color queued; waiting for Core confirmation (physical fixture not verified).');}else notify('Command queued for '+(activeProfile()?.name||'the selected house')+'.');setTimeout(()=>refresh(),8000);setTimeout(()=>refresh(),25000);setTimeout(()=>refresh(),65000);}
  catch(e){notify('Command not sent: '+e.message);}finally{working=false;}
 }
 function nav(){
@@ -273,6 +273,7 @@ function render(){if(!isOwner()&&['Security','Doorbell'].includes(page))page='Ho
 const validMusicURL=x=>{try{if(!x||x.length>440||/[\s|<>\\]/.test(x))return false;const u=new URL(x);return ['https:','http:'].includes(u.protocol)&&!!u.hostname&&!u.username&&!u.password;}catch{return false;}};
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const text=id=>$(id)?.value.trim()||'';
+let pendingColor=null;
 async function act(a){
  if(a==='music:tune'||a.startsWith('music:station:')){
   let url=a==='music:tune'?text('musicUrl'):musicSettings.stations?.[Number(a.slice(14))]?.url||'';
