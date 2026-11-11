@@ -262,6 +262,9 @@ input::placeholder{color:#9da09f !important;opacity:1}
 @media(max-width:900px){.layout{grid-template-columns:1fr}.sidebar{padding:12px}.nav{display:flex;overflow-x:auto}.nav button{white-space:nowrap}.brand{display:none}.main{padding:16px}.four{grid-template-columns:repeat(2,minmax(0,1fr))}.hero-slate{padding:18px}}
 @media(max-width:540px){.two,.three,.four{grid-template-columns:1fr}.topbar h2{font-size:23px !important}.hero-tag{font-size:10px}.card{padding:17px !important}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms !important;transition-duration:.01ms !important}}
+.nav-section-label{padding:15px 12px 4px;color:#c7b692;font-size:9px;font-weight:770;letter-spacing:2.1px;opacity:.82;user-select:none}
+.nav-section-label:first-child{padding-top:4px}
+@media(max-width:900px){.nav-section-label{display:none}}
 </style>
 </head>
 <body>
@@ -468,7 +471,14 @@ async function command(action,r='',value=''){
  finally{working=false;}
 }
 function nav(){
- $('nav').innerHTML=PAGES.filter(([name])=>isOwner()||name!=='Doorbell').map(([name,ico])=>`<button data-page="${name}" class="${page===name?'active':''}"><span>${ico}</span>${name}</button>`).join('');
+ const categories={Home:'RESIDENCE',Lights:'AMBIENCE',Fans:'AMBIENCE',Pool:'AMBIENCE',Projector:'AMBIENCE',Fireplace:'AMBIENCE',Music:'AMBIENCE',Cleaning:'HOME SERVICES',Security:'HOME SERVICES',Doorbell:'HOME SERVICES',Settings:'PREFERENCES'};
+ let lastCategory='';
+ $('nav').innerHTML=PAGES.filter(([name])=>isOwner()||name!=='Doorbell').map(([name,ico])=>{
+  const category=categories[name]||'GENERAL';
+  const title=category===lastCategory?'':`<div class="nav-section-label">${category}</div>`;
+  lastCategory=category;
+  return title+`<button data-page="${name}" class="${page===name?'active':''}"><span aria-hidden="true">${ico}</span>${name}</button>`;
+ }).join('');
  const left=$('mode');if(left)left.innerHTML=`<strong>${connected?(bridgeOnline?'● HOUSE ONLINE':'● HOUSE OFFLINE'):'● SETUP REQUIRED'}</strong>${connected?'Each in-world device receives its own mansion ID.':'Website alone cannot control in-world objects. Open Settings → Connect House.'}`;
  const right=$('topstatus');if(right)right.innerHTML=`<span class="pulse" style="background:${connected?'#63dbad':'#d3b379'}"></span> ${connected?(isOwner()?'OWNER CONNECTED':'RESIDENT CONNECTED'):'NOT CONNECTED'}<br>Smart residence · ${esc(houseID?houseID.slice(0,8):'No house selected')}`;
   const selectorBox=$('topstatus');
