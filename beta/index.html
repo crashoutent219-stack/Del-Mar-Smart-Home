@@ -116,6 +116,9 @@ let browserHouse=localStorage.getItem(ACTIVE_STORE)||'';
 let lastSessionID=sessionStorage.getItem('delmar-beta-v92-id')||'';
 let selectedProfile=profiles.find(p=>p.id===requestedHouse)||(!requestedHouse&&profiles.find(p=>p.id===browserHouse));
 if(selectedProfile){houseID=selectedProfile.id;secret=selectedProfile.key;endpoint=WASABI_BRIDGE;}
+else if(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(requestedHouse)){
+ houseID=requestedHouse.toLowerCase();secret=sessionStorage.getItem('delmar-beta-v92-secret-'+houseID)||'';
+}
 else if(lastSessionID && (!requestedHouse||requestedHouse===lastSessionID)){
  houseID=lastSessionID;secret=sessionStorage.getItem('delmar-beta-v92-secret-'+lastSessionID)||'';
 }
@@ -131,6 +134,25 @@ async function switchHouse(id){
  const targetURL=new URL(location.href);targetURL.searchParams.set('house',p.id);targetURL.searchParams.delete('room');history.replaceState(null,'',targetURL.toString());
  room=ROOMS.some(r=>r.id===requestedRoom)?requestedRoom:'living';fanRoom='living';
  page='Home';render();await refresh();notify(connected?'Connected to '+p.name:'Saved house selected; check its credentials.');
+}
+function wallScreenURL(){
+ const link=new URL(location.href);
+ link.search='';link.hash='';
+ if(houseID)link.searchParams.set('house',houseID);
+ return link.toString();
+}
+function saveHouseInPageURL(){
+ if(!houseID)return;
+ const url=new URL(location.href);
+ url.searchParams.set('house',houseID);
+ history.replaceState(null,'',url.toString());
+}
+function displayWallURL(){
+ if(!houseID){notify('Connect this house before copying its permanent wall screen URL.');return;}
+ const link=wallScreenURL();
+ const input=$('permanentWallURL');if(input){input.value=link;input.focus();input.select();}
+ if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(link).then(()=>notify('Wall URL copied: save it as the prim Media Home URL for relog persistence.'),()=>notify('Clipboard blocked. Copy the Permanent Wall Screen URL field manually.'));
+ else notify('Copy the Permanent Wall Screen URL field manually.');
 }
 function displayHouseURL(){
  if(!houseID){notify('Connect to a house first.');return;}
@@ -333,9 +355,13 @@ function settings(){
  <div class="info">Your Wasabi Estates connection is configured automatically. Enter only your House ID and your private access key.</div>
  <label class="field-label">House ID (UUID)</label><input class="field" id="houseID" value="${esc(houseID)}" placeholder="UUID from House Core">
  <label class="field-label">Owner or Resident Access Key</label><input type="password" class="field" id="houseSecret" value="${esc(secret)}" placeholder="Private key from House Core" autocomplete="off">
- <label class="row"><span>Remember this house on THIS browser after logout</span><input id="rememberHouse" type="checkbox" checked></label>
+ <label class="row"><span>Remember access key on this browser when possible</span><input id="rememberHouse" type="checkbox" checked></label>
  ${mk('Connect & Save House','connect','primary')} ${mk('Disconnect Screen','disconnect','ghost')}
- <div class="notice">Remember saves the private key in this browser's local storage without encryption. Only use this on your own trusted device; anyone with this browser profile may control the house. Private browsing, cleared site data or another device will not retain it. No key is placed in the website URL or public GitHub file.</div>
+ <div class="notice">Remembering the access key depends on this viewer's browser storage, which may be cleared on relog. Never put an access key in a shared prim Media URL. The nonsecret House ID can be pinned in the Media Home URL below and will reopen the correct house each time.</div>
+ <div class="divider"></div><h3>Permanent Wall Screen URL</h3>
+ <p class="sub">Save this URL as the wall prim's Media Home URL in Firestorm. It remembers the House ID even when the viewer clears its browser storage; a new access key login may still be required.</p>
+ <input class="field" id="permanentWallURL" readonly value="${esc(wallScreenURL())}" aria-label="Permanent wall screen URL">
+ ${mk('Copy Permanent Wall URL','walllink','primary')}
  <div class="statline"><span>House connection</span><strong>${connected?(isOwner()?'OWNER':'RESIDENT'):'NOT CONNECTED'}</strong></div></div>
  <div class="card stack"><h3>Your Saved Houses</h3><p class="sub">Select any home to control its own pool, lights, fans and rooms. Saved separately on this browser.</p>
  ${rows||'<span class="sub">No saved houses yet.</span>'}
@@ -419,7 +445,7 @@ async function act(a){
    } else {
     profiles=profiles.filter(p=>p.id!==houseID);storeProfiles();localStorage.removeItem(ACTIVE_STORE);
    }
-   page=ROOMS.some(r=>r.id===requestedRoom)?'Lights':'Home';render();notify('Connected to '+nextName+(remember?' and remembered on this browser.':'.'));
+   saveHouseInPageURL();page=ROOMS.some(r=>r.id===requestedRoom)?'Lights':'Home';render();notify('Connected to '+nextName+(remember?' and remembered on this browser.':'.'));
   }else{endpoint=previous.endpoint;houseID=previous.houseID;secret=previous.secret;role=previous.role;render();notify('Credentials not saved: connection failed.');}
   return;
  }
@@ -439,6 +465,7 @@ async function act(a){
   page='Settings';render();notify('Saved profile removed from this browser.');return;
  }
  if(a==='roomlink'){displayHouseURL();return;}
+ if(a==='walllink'){displayWallURL();return;}
  if(a==='name:save'){const n=text('roomName');if(!n||n.length>32||/[|<>]/.test(n)){notify('Room name must be 1–32 characters, no | < >.');return;}await command('ROOM_NAME',room,n);return;}
  if(a==='name:reset'){await command('ROOM_NAME',room,defaultRoom(room));return;}
  if(a.startsWith('pair:')){const kind=a.slice(5);if(kind==='CLEAN_ZONE'){const kind2=$('zoneKind').value;await command('CLEAN_ZONE_PAIR',kind2==='WINDOW'?'windows':room,kind2);}else await command(kind+'_PAIR',kind==='LIGHT'?room:kind==='FAN'?fanRoom:'','');return;}
