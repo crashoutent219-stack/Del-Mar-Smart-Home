@@ -685,7 +685,9 @@ function security(){if(!isOwner())return `<div class="card stack"><h3>Owner Secu
  <p class="sub">Requested House Core setting. The actual sensor status is shown separately.</p>
  <div class="statline"><span>Physical Security Sensor (last report)</span><strong>${Number(s.sensorReportedAt||0)>0?(val(s.actualArmed)?'ARMED':'DISARMED'):'NOT REPORTED'}</strong></div>
  <p class="sub">${Number(s.sensorReportedAt||0)>0?(Date.now()/1000-Number(s.sensorReportedAt||0)<120?'Recent sensor report':'Sensor report is stale; confirm in Firestorm'):'Sensor has not reported physical status yet'}</p>
- <div class="control-grid">${mk('ARM','sec:1','primary')}${mk('DISARM','sec:0','warn')}</div><div class="divider"></div><div class="row"><span>Lockdown</span>${toggle(val(s.lockdown),'sec:lockdown')}</div><div class="row"><span>Silent Mode (routine notifications)</span>${toggle(val(s.silent),'sec:silent')}</div><label class="field-label">Visitor Warning & Kick Delay</label><select class="field" data-select="kick">${[10,30,60].map(n=>`<option value="${n}" ${String(s.kick)===String(n)?'selected':''}>${n} seconds</option>`).join('')}</select><div class="row"><span>Automatic Ejection (OFF by default)</span>${toggle(val(s.autoKick),'security:auto')}</div>
+ <div class="control-grid">${mk('ARM','sec:1','primary')}${mk('DISARM','sec:0','warn')}</div><div class="divider"></div><div class="row"><span>Lockdown</span>${toggle(val(s.lockdown),'sec:lockdown')}</div><div class="row"><span>Silent Mode (routine notifications)</span>${toggle(val(s.silent),'sec:silent')}</div><label class="field-label" for="securityKickDelay">Visitor Warning & Kick Delay</label><select class="field" id="securityKickDelay" data-select="kick">${[10,30,60].map(n=>`<option value="${n}" ${String(s.kick)===String(n)?'selected':''}>${n} seconds</option>`).join('')}</select>
+ ${mk('Save Warning Delay','sec:delay','primary')}
+ <p class="sub">Choose 10, 30, or 60 seconds, then click Save Warning Delay. The command is sent to the House Core, and the separate Security Sensor must report the new duration before it is confirmed.</p><div class="row"><span>Automatic Ejection (OFF by default)</span>${toggle(val(s.autoKick),'security:auto')}</div>
  <p class="sub">Owner-only. When armed and enabled, the sensor privately warns unauthorized avatars and waits the chosen 10, 30, or 60 seconds before attempting an eject. Disarming or allowing them cancels automatic countdowns. Silent Mode never suppresses mandatory ejection warnings.</p>
  ${mk('Pair Security Device','pair:SECURITY')}
  <div class="notice">Automatic ejection is opt-in. Test ARM/DISARM and the warning countdown with a consenting avatar before enabling it for guests. Ejection affects the sensor's land parcel, not just the building.</div></div><div class="card stack"><h3>Access Control</h3><p class="sub">Add residents to the whitelist or grant moderator access. Only someone holding the private house key should be allowed to use this web panel.</p><label class="field-label">Avatar UUID</label><input class="field" id="accessUUID" maxlength="36" placeholder="Avatar UUID"><div class="control-grid">${mk('Allow Resident','sec:wladd')}${mk('Remove from Allowlist','sec:wldel')}${mk('Add Moderator','sec:modadd')}${mk('Remove Moderator','sec:moddel')}</div><div class="divider"></div><p class="sub">Whitelist and moderator UUIDs are saved by the security object itself using Linkset Data. Removing an avatar here does not revoke an individual HUD key or physically eject anyone.</p>
@@ -845,6 +847,12 @@ async function act(a){
  if(a.startsWith('sec:')){
   const op=a.slice(4);
   if(op==='1'||op==='0'){await command('SEC_ARMED','',op);return;}
+  if(op==='delay'){
+   if(!isOwner()){notify('Owner access required to change the warning delay.');return;}
+   const requested=$('securityKickDelay')?.value||'';
+   if(!['10','30','60'].includes(requested)){notify('Choose a warning delay of 10, 30, or 60 seconds.');return;}
+   await command('SEC_KICK','',requested);return;
+  }
   const avatar=text('accessUUID');if(!UUID.test(avatar)){notify('Enter a valid avatar UUID.');return;}
   const map={wladd:'SEC_WL_ADD',wldel:'SEC_WL_DEL',modadd:'SEC_MOD_ADD',moddel:'SEC_MOD_DEL'};
   await command(map[op],'',avatar);return;
@@ -871,7 +879,7 @@ document.addEventListener('change',e=>{
  if(t.dataset.select==='house'){if(t.value)switchHouse(t.value);return;}
  if(t.dataset.select==='room'){room=t.value;render();return;}
  if(t.dataset.select==='fan'){fanRoom=t.value;render();return;}
- if(t.dataset.select==='kick'){if(isOwner())command('SEC_KICK','',t.value);return;}
+ if(t.dataset.select==='kick'){return;} // Explicit Save Warning Delay button sends one command.
  if(t.dataset.range==='brightness'){command('LIGHT_BRIGHT',room,t.value);return;}
  const a=t.dataset.action;
  if(!a)return;
